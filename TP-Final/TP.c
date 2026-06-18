@@ -265,7 +265,7 @@ void confiEINT(){
 
 void configUART(void) {
 
-    // ← ESTO FALTABA: configurar P0.2 (TXD0) y P0.3 (RXD0)
+    // configurar P0.2 (TXD0) y P0.3 (RXD0)
     PINSEL_CFG_T pinCfg;
 
     pinCfg.port   = PORT_0;
@@ -367,6 +367,7 @@ void actualizarADC(void){
         }
     }
 }
+
 
 
 
