@@ -1,9 +1,14 @@
 Grúa con electroimán robotica Programable con LPC1769
+
 Asignatura: Electrónica Digital III - Universidad Nacional de Córdoba
+
 Integrantes:
+
 •	Alanis, Gustavo alejandro
 •	Marín Martinez, Mario Lautaro
+
 Profesor: Marcos Javier Blasco 
+
 ________________________________________
 1. Descripción General del Proyecto
 El proyecto consiste en un brazo robótico de dos grados de libertad controlado mediante una placa NXP LPC1769. El sistema permite mover dos servomotores utilizando potenciómetros como interfaz de control manual y almacenar posiciones seleccionadas por el usuario.
