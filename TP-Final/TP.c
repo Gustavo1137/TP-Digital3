@@ -25,8 +25,8 @@ volatile int PWM2 = 0;
 volatile uint16_t convertido1 = 0;
 volatile uint16_t convertido2 = 0;
 uint32_t BufferDMA[1024];
-//uint16_t BufferServo1[512];
-//uint16_t BufferServo2[512];
+uint16_t BufferServo1[512];
+uint16_t BufferServo2[512];
 //uint32_t* PosicionesGuar1 = (uint32_t*) 0x20080000;//primera mitad del banco 1
 //uint32_t* PosicionesGuar2 = (uint32_t*) 0x20082000;//segunda mitad del banco
 volatile uint16_t totalPosiciones = 0;  // cuántas se guardaron
@@ -45,9 +45,10 @@ volatile uint16_t t2 = 0;
 volatile int index=0;
 uint16_t adc=0;
 uint8_t canal=0;
-uint32_t dato = 0;
-uint32_t valorUART = 0;
-uint32_t Estado = 1;
+volatile uint32_t dato = 0;
+volatile uint32_t valorUART = 0;
+volatile uint32_t Estado = 1;
+volatile uint32_t contador = 0;
 
 
 GPDMA_LLI_T lli;
@@ -114,26 +115,26 @@ void configPIN(){
 	GPIO_SetDir(PORT_0, (1 << 4), GPIO_OUTPUT);
 	GPIO_ClearPins(PORT_0, 1 << 4);
 
-	//CONFIGURAR INTERRUPCION EXTERNA EINT0
+	//CONFIGURAR INTERRUPCION EXTERNA EINT1
 	PINSEL_CFG_T pinEINT0;
 	pinEINT0.port = PORT_2;
-	pinEINT0.pin = PIN_10;
+	pinEINT0.pin = PIN_11;
 	pinEINT0.func = PINSEL_FUNC_01;
 	pinEINT0.mode = PINSEL_PULLDOWN;
 	pinEINT0.openDrain = DISABLE;
 	PINSEL_ConfigPin(&pinEINT0);
 
-	//CONFIGURAR INTERRUPCION EXTERNA EINT1
+	//CONFIGURAR INTERRUPCION EXTERNA EINT2
 	PINSEL_CFG_T pinEINT1;
 	pinEINT1.port = PORT_2;
-	pinEINT1.pin = PIN_11;
+	pinEINT1.pin = PIN_12;
 	pinEINT1.func = PINSEL_FUNC_01;
 	pinEINT1.mode = PINSEL_PULLDOWN;
 	pinEINT1.openDrain = DISABLE;
 	PINSEL_ConfigPin(&pinEINT1);
 
 	//CONFIGURACION DE PIN UART, EL TX
-    PINSEL_CFG_T uartCfg;
+    /*PINSEL_CFG_T uartCfg;
 	uartCfg.port = PORT_0;
 	uartCfg.pin = PIN_2;
 	uartCfg.func = PINSEL_FUNC_01;
@@ -141,7 +142,7 @@ void configPIN(){
 	uartCfg.openDrain = DISABLE;
 	PINSEL_ConfigPin(&uartCfg);
 	GPIO_SetDir(PORT_0, (1 << 2), GPIO_OUTPUT);
-	GPIO_ClearPins(PORT_0, 1 << 2);
+	//GPIO_ClearPins(PORT_0, 1 << 2);
 	//CONFIGURACION DE PIN UART, EL RX
 	PINSEL_CFG_T uartCfg1;
 	uartCfg1.port = PORT_0;
@@ -150,8 +151,8 @@ void configPIN(){
 	uartCfg1.mode = PINSEL_TRISTATE;
 	uartCfg1.openDrain = DISABLE;
 	PINSEL_ConfigPin(&uartCfg1);
-	GPIO_SetDir(PORT_0, (1 << 3), GPIO_OUTPUT);
-	GPIO_ClearPins(PORT_0, 1 << 3);
+	GPIO_SetDir(PORT_0, (1 << 3), GPIO_INPUT);
+	//GPIO_ClearPins(PORT_0, 1 << 3);*/
 }
 
 void configTimer(){
@@ -242,22 +243,22 @@ void confiEINT(){
 	EXTI_Init();
 
 	EXTI_CFG_T exti1;
-	exti1.line = EXTI_EINT0;
+	exti1.line = EXTI_EINT1;
 	exti1.mode = EXTI_EDGE_SENSITIVE;
 	exti1.polarity = EXTI_RISING_EDGE;
 
 	EXTI_ConfigEnable(&exti1);
 
 	EXTI_CFG_T exti2;
-	exti2.line = EXTI_EINT1;
+	exti2.line = EXTI_EINT2;
 	exti2.mode = EXTI_EDGE_SENSITIVE;
 	exti2.polarity = EXTI_RISING_EDGE;
 
 	EXTI_Config(&exti2);
 	EXTI_ConfigEnable(&exti2);
 
-	NVIC_EnableIRQ(EINT0_IRQn);
 	NVIC_EnableIRQ(EINT1_IRQn);
+	NVIC_EnableIRQ(EINT2_IRQn);
 }
 
 
@@ -270,12 +271,13 @@ void configUART(void) {
     pinCfg.port   = PORT_0;
     pinCfg.pin    = PIN_2;
     pinCfg.func   = PINSEL_FUNC_01;   // funcion UART0 TXD
-    pinCfg.mode   = PINSEL_PULLUP;
+    pinCfg.mode   = PINSEL_TRISTATE;
     pinCfg.openDrain = DISABLE;
     PINSEL_ConfigPin(&pinCfg);
 
     pinCfg.pin    = PIN_3;
     pinCfg.func   = PINSEL_FUNC_01;   // funcion UART0 RXD
+    pinCfg.mode      = PINSEL_PULLUP;
     PINSEL_ConfigPin(&pinCfg);
 
     UART_CFG_T uartCfg;
@@ -382,6 +384,11 @@ void actualizarServo2(void){
 
 
 int main(void){
+	BufferServo1[0] = 1000;
+
+	BufferServo2[0] = 1000;
+
+
 	lli.srcAddr = (uint32_t)&LPC_ADC->ADGDR;
 	lli.dstAddr = (uint32_t)BufferDMA;
 	lli.nextLLI = (uint32_t)&lli;
@@ -394,19 +401,28 @@ int main(void){
 	configTimer();
 	while(1){
 		if(Estado == 1){
-			actualizarADC();
-			actualizarServo1();
-			actualizarServo2();
-			angulo1 = ((uint32_t)(PWM1 - 500) * 180) / 2000;
-			angulo2 = ((uint32_t)(PWM2 - 500) * 180) / 2000;
-			for(volatile int i=0; i<5000000; i++){
-				if(i == 4999999){
-				enviarUART();}
-			}
-		}else{
-			for(volatile int i = 0; i < 5000000; i++);
-			GPIO_TogglePins(PORT_0, PIN_4);
-		}
+		        // MODO MANUAL
+		        actualizarADC();
+		        actualizarServo1();
+		        actualizarServo2();
+		        angulo1 = ((uint32_t)(PWM1 - 500) * 180) / 2000;
+		        angulo2 = ((uint32_t)(PWM2 - 500) * 180) / 2000;
+		        enviarUART();
+
+		    } else {
+		        TIM_UpdateMatchValue(LPC_TIM0, TIM_MATCH_0, BufferServo1[contador]);
+		        TIM_UpdateMatchValue(LPC_TIM2, TIM_MATCH_0, BufferServo2[contador]);
+		        //angulo1 = 90;
+		        //angulo2 = 90;
+		        contador++;
+				if(contador >= index){
+					contador = 0;
+				}
+
+				for(volatile int i = 0; i < 5000000; i++);
+		    }
+
+		    for(volatile int i = 0; i < 1000000; i++);
 	}
 }
 
@@ -444,16 +460,43 @@ void EINT1_IRQHandler(void){
 void EINT2_IRQHandler(void){
 	EXTI_ClearFlag(EXTI_EINT2);
 
-    //PosicionesGuar1[index]=PWM1;
-    //PosicionesGuar2[index]=PWM2;
+	GPIO_TogglePins(PORT_0, (1<<4));
+
+	BufferServo1[index] = PWM1;
+	BufferServo2[index] = PWM2;
     index++;
-    if(index==4096){
+    if(index==512){
     	index=0;
+    	//contador++;
     }
 }
 
 void UART0_IRQHandler(void){
-    NVIC_ClearPendingIRQ(UART0_IRQn);
+
+    while(UART_CheckBusy(UART0) == RESET){
+
+        if(!(LPC_UART0->LSR & (1<<0)))
+            break;
+
+        uint8_t byte = UART_ReceiveByte(UART0);
+
+        if(byte == '1')
+            Estado = 1;
+
+        if(byte == '0')
+            Estado = 0;
+    }
+
+	/*GPIO_TogglePins(PORT_0, (1<<4));
+	uint8_t byte = UART_ReceiveByte(UART0);
+
+	    if(byte == '1'){
+	        Estado = 1;
+	    }
+	    else if(byte == '0'){
+	        Estado = 0;
+	    }*/
+    /*NVIC_ClearPendingIRQ(UART0_IRQn);
 
 	uint32_t valorUART = UART_ReceiveByte(UART0);
 
@@ -461,7 +504,7 @@ void UART0_IRQHandler(void){
     	Estado = 1;
     } else if (valorUART == '0') {
         Estado = 0;
-    }
+    }*/
 }
 
 
