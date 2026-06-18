@@ -460,6 +460,23 @@ void EINT1_IRQHandler(void){
 void EINT2_IRQHandler(void){
 	EXTI_ClearFlag(EXTI_EINT2);
 
+	actualizarADC();
+	actualizarServo1();
+	actualizarServo2();
+
+	//BufferServo1[index] = PWM1;
+	//BufferServo2[index] = PWM2;
+
+	//index++;
+
+	if(index < 512){
+	    BufferServo1[index] = PWM1;
+	    BufferServo2[index] = PWM2;
+	    index++;
+	}
+
+	/*EXTI_ClearFlag(EXTI_EINT2);
+
 	GPIO_TogglePins(PORT_0, (1<<4));
 
 	BufferServo1[index] = PWM1;
@@ -468,7 +485,7 @@ void EINT2_IRQHandler(void){
     if(index==512){
     	index=0;
     	//contador++;
-    }
+    }*/
 }
 
 void UART0_IRQHandler(void){
@@ -485,6 +502,7 @@ void UART0_IRQHandler(void){
 
         if(byte == '0')
             Estado = 0;
+            contador = 0;
     }
 
 	/*GPIO_TogglePins(PORT_0, (1<<4));
