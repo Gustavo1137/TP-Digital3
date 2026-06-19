@@ -60,7 +60,8 @@ Diagrama de circuito
 
 Diagrama de Flujo
 
-<img width="1903" height="2083" alt="Diagrama de flujo 2" src="https://github.com/user-attachments/assets/559e75b3-bf93-4de9-a2da-d325a1491afc" />
+<img width="1903" height="2083" alt="DIAGRAMA DE FLUJO" src="https://github.com/user-attachments/assets/082f26ee-4582-4e20-a239-d33886162c00" />
+
 <img width="3880" height="1659" alt="Diagrama de flujo 1" src="https://github.com/user-attachments/assets/55f9ea17-c299-41e1-8fae-a07ceefec455" />
 
 ________________________________________
