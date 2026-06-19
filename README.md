@@ -1,4 +1,4 @@
-Grúa con electroimán robotica Programable con LPC1769
+#Grúa con electroimán robotica Programable con LPC1769
 
 Asignatura: Electrónica Digital III - Universidad Nacional de Córdoba
 
@@ -53,6 +53,16 @@ Los dos potenciómetros generan señales analógicas que son digitalizadas media
 Las conversiones son transferidas mediante DMA hacia un buffer de memoria, reduciendo la carga de procesamiento.
 Los servomotores son controlados mediante señales PWM generadas por timers.
 El electroimán es accionado mediante un MOSFET de potencia y un diodo para protección inductiva.
+
+Diagrama de circuito
+
+<img width="932" height="753" alt="Diagrama de circuito" src="https://github.com/user-attachments/assets/2ee8fbe2-467f-410e-99e9-c65b45a4954d" />
+
+Diagrama de Flujo
+
+<img width="1903" height="2083" alt="Diagrama de flujo 2" src="https://github.com/user-attachments/assets/559e75b3-bf93-4de9-a2da-d325a1491afc" />
+<img width="3880" height="1659" alt="Diagrama de flujo 1" src="https://github.com/user-attachments/assets/55f9ea17-c299-41e1-8fae-a07ceefec455" />
+
 ________________________________________
 Arquitectura de Software
 Máquina de Estados
@@ -142,8 +152,23 @@ ________________________________________
 6. Estructura del Repositorio
 ├TP-Final
    ├TP.c
+
    ├RobotControl.py         
 ________________________________________
 Conclusión
 Se desarrolló un sistema embebido basado en LPC1769 capaz de controlar una grúa robótica de dos grados de libertad mediante adquisición analógica, DMA, temporizadores, interrupciones, comunicación UART y el control de un electroimán, mediante el micro. El proyecto permitió integrar múltiples periféricos avanzados del microcontrolador en una aplicación real de automatización y control.
+
+
+
+
+Fotos y videos del Proyecto
+
+https://github.com/user-attachments/assets/b9559eb5-7ca8-4562-ad44-53a992e83aec
+
+<img width="1280" height="960" alt="Fotos del TP5" src="https://github.com/user-attachments/assets/80efe4c2-db0e-44ef-be86-8b8446cd40ee" />
+<img width="960" height="1280" alt="Fotos del TP4" src="https://github.com/user-attachments/assets/4e6f7300-5d8e-4079-85ce-a236e7aa3071" />
+<img width="1280" height="960" alt="Fotos del TP3" src="https://github.com/user-attachments/assets/1b0f9ef7-01c2-4e63-9228-97977be327e9" />
+<img width="1280" height="960" alt="Fotos del TP2" src="https://github.com/user-attachments/assets/af42cb03-5b49-42d5-9fb7-d48847eeb8c3" />
+<img width="1280" height="960" alt="Fotos del TP1" src="https://github.com/user-attachments/assets/dd344c1e-c78f-471c-82a8-e92630316ffb" />
+
 
