@@ -1,417 +1,629 @@
-#pip install customtkinter   # para la UI
-#pip install matplotlib  
+#ifdef __USE_CMSIS
+#include "LPC17xx.h"
+#endif
+#include "lpc17xx_pinsel.h"
+#include "lpc17xx_adc.h"
+#include "lpc17xx_timer.h"
+#include "lpc17xx_gpdma.h"
+#include "lpc17xx_gpio.h"
+#include "lpc17xx_dac.h"
+#include "lpc17xx_exti.h"
+#include "lpc17xx_uart.h"
+#include <cr_section_macros.h>
+//#include <stdint.h>
+#include <string.h>
+#include <stdio.h>
 
-"""
-Robot Control - Monitor de Servos
-==================================
-Formato UART esperado del LPC1769:
-  $S1:<angulo1>,S2:<angulo2>,M:<modo>\n
-  Ejemplo: $S1:90,S2:45,M:MANUAL\n
- 
-La PC puede enviar comandos:
-  AUTO\n   -> activa modo automático
-  MANUAL\n -> activa modo manual
-"""
- 
-import tkinter as tk
-from tkinter import ttk
-import threading
-import serial
-import serial.tools.list_ports
-import math
-import time
-from collections import deque
- 
-# ── Constantes de diseño ────────────────────────────────────────────────────
-BG        = "#0f1117"
-PANEL     = "#1a1d27"
-ACCENT    = "#4f8ef7"
-ACCENT2   = "#f74f7a"
-GREEN     = "#4fbd6e"
-YELLOW    = "#f7c44f"
-TEXT      = "#e8eaf0"
-SUBTEXT   = "#6b7280"
-RADIUS    = 12
- 
-# ── Datos simulados para demo sin hardware ───────────────────────────────────
-DEMO_MODE = False   # cambiar a False cuando tengas el LPC conectado
- 
-class ServoGauge(tk.Canvas):
-    """Gauge semicircular para mostrar ángulo de un servo."""
-    def __init__(self, parent, label, color, **kwargs):
-        super().__init__(parent, bg=PANEL, highlightthickness=0, **kwargs)
-        self.label  = label
-        self.color  = color
-        self.angle  = 0
-        self._draw(0)
- 
-    def _draw(self, angle):
-        self.delete("all")
-        w = int(self["width"])
-        h = int(self["height"])
-        cx, cy = w // 2, int(h * 0.62)
-        r_outer = int(min(w, h) * 0.42)
-        r_inner = int(r_outer * 0.68)
- 
-        # Arco de fondo (gris)
-        self._arc(cx, cy, r_outer, r_inner, 180, 180, "#2a2d3a")
- 
-        # Arco coloreado según ángulo (0-360 mapeado a 0-180 grados de arco)
-        extent = (angle / 360) * 180
-        if extent > 0:
-            self._arc(cx, cy, r_outer, r_inner, 180, extent, self.color)
- 
-        # Aguja
-        rad = math.radians(180 - (angle / 360) * 180)
-        nx  = cx + int(r_inner * 0.82 * math.cos(rad))
-        ny  = cy - int(r_inner * 0.82 * math.sin(rad))
-        self.create_line(cx, cy, nx, ny, fill=TEXT, width=3, capstyle="round")
-        self.create_oval(cx-6, cy-6, cx+6, cy+6, fill=self.color, outline="")
- 
-        # Texto ángulo
-        self.create_text(cx, cy + int(h * 0.18),
-                         text=f"{angle:.0f}°",
-                         fill=TEXT, font=("Arial", 22, "bold"))
-        # Label
-        self.create_text(cx, int(h * 0.10),
-                         text=self.label,
-                         fill=SUBTEXT, font=("Arial", 11))
-        # Marcas 0 y 360
-        for deg, label in [(0, "0°"), (180, "360°"), (90, "180°")]:
-            rad2 = math.radians(180 - deg)
-            mx = cx + int((r_outer + 12) * math.cos(rad2))
-            my = cy - int((r_outer + 12) * math.sin(rad2))
-            self.create_text(mx, my, text=label,
-                             fill=SUBTEXT, font=("Arial", 8))
- 
-    def _arc(self, cx, cy, r_out, r_in, start, extent, color):
-        """Dibuja un arco grueso como anillo."""
-        steps = max(int(extent * 2), 2)
-        for i in range(steps):
-            a0 = math.radians(start - (extent * i / steps))
-            a1 = math.radians(start - (extent * (i+1) / steps))
-            for r in range(r_in, r_out, 2):
-                x0 = cx + r * math.cos(a0)
-                y0 = cy - r * math.sin(a0)
-                x1 = cx + r * math.cos(a1)
-                y1 = cy - r * math.sin(a1)
-                self.create_line(x0, y0, x1, y1,
-                                 fill=color, width=3, capstyle="round")
- 
-    def set_angle(self, angle):
-        self.angle = max(0, min(360, angle))
-        self._draw(self.angle)
- 
- 
-class RobotControlApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Robot Control")
-        self.root.configure(bg=BG)
-        self.root.geometry("720x580")
-        self.root.resizable(False, False)
- 
-        self.serial_port  = None
-        self.running      = False
-        self.mode         = tk.StringVar(value="MANUAL")
-        self.status_msg   = tk.StringVar(value="Desconectado")
-        self.log_lines    = deque(maxlen=50)
-        self._demo_t      = 0
- 
-        self._build_ui()
- 
-        if DEMO_MODE:
-            self._start_demo()
-            
-    """"    self.root.after(1000, self.prueba_gauges)
-        
-    def prueba_gauges(self):
-        self.gauge1.set_angle(90)
-        self.gauge2.set_angle(270)
+#define CONTROL 1000
+#define CONTROL1 1000
+//#define MODO_MANUAL 0
+//#define MODO_AUTO   1
 
-        print("GAUGES OK")"""
- 
-    # ── UI ───────────────────────────────────────────────────────────────────
-    def _build_ui(self):
-        # ── Título ──
-        title_frame = tk.Frame(self.root, bg=BG)
-        title_frame.pack(fill="x", padx=24, pady=(18, 0))
- 
-        tk.Label(title_frame, text="⚙  Robot Control",
-                 bg=BG, fg=TEXT, font=("Arial", 18, "bold")).pack(side="left")
- 
-        # Badge de modo
-        self.mode_badge = tk.Label(title_frame, textvariable=self.mode,
-                                   bg=GREEN, fg="#fff",
-                                   font=("Arial", 10, "bold"),
-                                   padx=10, pady=3)
-        self.mode_badge.pack(side="right", padx=4)
- 
-        # ── Conexión ──
-        conn_frame = tk.Frame(self.root, bg=PANEL)
-        conn_frame.pack(fill="x", padx=24, pady=(12, 0))
-        conn_frame.configure(pady=8)
- 
-        tk.Label(conn_frame, text="Puerto:", bg=PANEL, fg=SUBTEXT,
-                 font=("Arial", 10)).pack(side="left", padx=(12, 4))
- 
-        self.port_var = tk.StringVar()
-        self.port_combo = ttk.Combobox(conn_frame, textvariable=self.port_var,
-                                        width=12, state="readonly")
-        self.port_combo.pack(side="left", padx=4)
-        self._refresh_ports()
- 
-        tk.Label(conn_frame, text="Baud:", bg=PANEL, fg=SUBTEXT,
-                 font=("Arial", 10)).pack(side="left", padx=(10, 4))
-        self.baud_var = tk.StringVar(value="9600")
-        ttk.Combobox(conn_frame, textvariable=self.baud_var,
-                     values=["9600","19200","38400","57600","115200"],
-                     width=8, state="readonly").pack(side="left", padx=4)
- 
-        self.connect_btn = tk.Button(conn_frame, text="Conectar",
-                                     bg=ACCENT, fg="#fff",
-                                     font=("Arial", 10, "bold"),
-                                     relief="flat", padx=14, pady=4,
-                                     cursor="hand2",
-                                     command=self._toggle_connect)
-        self.connect_btn.pack(side="left", padx=(12, 4))
- 
-        tk.Button(conn_frame, text="↺", bg=PANEL, fg=SUBTEXT,
-                  relief="flat", font=("Arial", 12),
-                  cursor="hand2",
-                  command=self._refresh_ports).pack(side="left")
- 
-        tk.Label(conn_frame, textvariable=self.status_msg,
-                 bg=PANEL, fg=SUBTEXT,
-                 font=("Arial", 9)).pack(side="right", padx=12)
- 
-        # ── Gauges ──
-        gauge_frame = tk.Frame(self.root, bg=BG)
-        gauge_frame.pack(fill="x", padx=24, pady=(16, 0))
- 
-        self.gauge1 = ServoGauge(gauge_frame, "Servo 1", ACCENT,
-                                  width=300, height=200)
-        self.gauge1.pack(side="left", padx=(0, 12))
- 
-        self.gauge2 = ServoGauge(gauge_frame, "Servo 2", ACCENT2,
-                                  width=300, height=200)
-        self.gauge2.pack(side="left")
- 
-        # ── Botones de modo ──
-        btn_frame = tk.Frame(self.root, bg=BG)
-        btn_frame.pack(fill="x", padx=24, pady=(18, 0))
- 
-        self.auto_btn = tk.Button(
-            btn_frame,
-            text="▶  Modo Automático\nEjecuta posiciones guardadas",
-            bg=GREEN, fg="#fff",
-            font=("Arial", 12, "bold"),
-            relief="flat", padx=20, pady=14,
-            cursor="hand2", justify="center",
-            command=self._set_auto)
-        self.auto_btn.pack(side="left", expand=True, fill="x", padx=(0, 8))
- 
-        self.manual_btn = tk.Button(
-            btn_frame,
-            text="🎮  Modo Manual\nControl con potenciómetro",
-            bg=ACCENT, fg="#fff",
-            font=("Arial", 12, "bold"),
-            relief="flat", padx=20, pady=14,
-            cursor="hand2", justify="center",
-            command=self._set_manual)
-        self.manual_btn.pack(side="left", expand=True, fill="x", padx=(8, 0))
- 
-        # ── Log ──
-        log_frame = tk.Frame(self.root, bg=PANEL)
-        log_frame.pack(fill="both", expand=True, padx=24, pady=(14, 18))
- 
-        tk.Label(log_frame, text="Log UART", bg=PANEL, fg=SUBTEXT,
-                 font=("Arial", 9, "bold")).pack(anchor="w", padx=10, pady=(6,0))
- 
-        self.log_text = tk.Text(log_frame, bg=PANEL, fg=SUBTEXT,
-                                 font=("Consolas", 9),
-                                 relief="flat", state="disabled",
-                                 height=5)
-        self.log_text.pack(fill="both", expand=True, padx=10, pady=(2, 8))
- 
-    # ── Conexión serial ──────────────────────────────────────────────────────
-    def _refresh_ports(self):
-        ports = [p.device for p in serial.tools.list_ports.comports()]
-        self.port_combo["values"] = ports
-        if ports:
-            self.port_var.set(ports[0])
- 
-    def _toggle_connect(self):
-        if self.serial_port and self.serial_port.is_open:
-            self._disconnect()
-        else:
-            self._connect()
- 
-    def _connect(self):
-        try:
-            self.serial_port = serial.Serial(
-                self.port_var.get(),
-                int(self.baud_var.get()),
-                timeout=1
-            )
-            self.running = True
-            self.status_msg.set(f"Conectado a {self.port_var.get()}")
-            self.connect_btn.config(text="Desconectar", bg=ACCENT2)
-            threading.Thread(target=self._read_loop, daemon=True).start()
-            self._log(f"Conectado a {self.port_var.get()} @ {self.baud_var.get()}")
-        except Exception as e:
-            self.status_msg.set(f"Error: {e}")
-            self._log(f"ERROR: {e}")
- 
-    def _disconnect(self):
-        self.running = False
-        if self.serial_port:
-            self.serial_port.close()
-        self.status_msg.set("Desconectado")
-        self.connect_btn.config(text="Conectar", bg=ACCENT)
-        self._log("Desconectado")
- 
-    # ── Lectura UART ─────────────────────────────────────────────────────────
-    def _read_loop(self):
-        while self.running and self.serial_port.is_open:
-            try:
-                raw = self.serial_port.readline()
+volatile int valor = 0;
+volatile int PWM1 = 0;
+volatile int PWM2 = 0;
+volatile uint16_t convertido1 = 0;
+volatile uint16_t convertido2 = 0;
+volatile uint32_t BufferDMA[1024];
+uint16_t BufferServo1[512];
+uint16_t BufferServo2[512];
+//uint32_t* PosicionesGuar1 = (uint32_t*) 0x20080000;//primera mitad del banco 1
+//uint32_t* PosicionesGuar2 = (uint32_t*) 0x20082000;//segunda mitad del banco
+volatile uint16_t totalPosiciones = 0;  // cuántas se guardaron
+//volatile uint16_t idxAuto = 0;          // cuál se reproduce ahora
+//volatile char rx_buf[16];
+//volatile uint8_t rx_idx = 0;
+//volatile uint8_t cmd_ready = 0;
+//volatile uint8_t modo = MODO_MANUAL;
+//volatile int angulo = 0;
+volatile uint16_t angulo1 = 0;
+volatile uint16_t angulo2 = 0;
+volatile uint16_t i1 = 0;
+volatile uint16_t i2 = 0;
+//volatile uint16_t t1 = 0;
+//volatile uint16_t t2 = 0;
+volatile int index = 0;
+uint16_t adc=0;
+uint8_t canal=0;
+volatile uint32_t dato = 0;
+volatile uint32_t valorUART = 0;
+volatile uint32_t Estado = 1;
+volatile uint32_t contador = 0;
+volatile uint32_t tick  = 0;
+volatile uint32_t tickAUTO  = 0;
 
-                if not raw:
-                    continue
 
-                line = raw.decode(
-                    "utf-8",
-                    errors="ignore"
-                ).strip()
+static uint32_t filtro1 = 0;
+static uint32_t filtro2 = 0;
 
-                print("RX:", repr(line))
 
-                self.root.after(0, self._parse_line, line)
+GPDMA_LLI_T lli;
 
-            except Exception as e:
-                print("READ ERROR:", e)
-                break
-    #def _read_loop(self):
-     #   """Lee líneas del puerto serie en un hilo separado."""
-      #  while self.running and self.serial_port.is_open:
-       #     try:
-        #        line = self.serial_port.readline().decode("utf-8", errors="ignore").strip()
-         #       if line.startswith("$"):
-          #          self.root.after(0, self._parse_line, line)
-           # except:
-            #    break
- 
-    def _parse_line(self, line):
 
-        self._log(line)
+static int itoa_simple(int val, char* buf) {
+    int i = 0;
+    if (val == 0) { buf[i++] = '0'; buf[i] = '\0'; return i; }
+    char tmp[10]; int t = 0;
+    while (val > 0) { tmp[t++] = '0' + (val % 10); val /= 10; }
+    while (t > 0) buf[i++] = tmp[--t];
+    buf[i] = '\0';
+    return i;
+}
 
-        try:
 
-            if not line.startswith("$"):
-                print("Formato inválido:", repr(line))
-                return
+void configPIN(){
+	//CONFIGURO EL PIN P0.23, PARA EL ADC
+	PINSEL_CFG_T pinCfg;
+	pinCfg.port = PORT_0;
+	pinCfg.pin = PIN_23;
+	pinCfg.func = PINSEL_FUNC_01;
+	pinCfg.mode = PINSEL_TRISTATE;
+	pinCfg.openDrain = DISABLE;
+	PINSEL_ConfigPin(&pinCfg);
 
-            data = {}
+	//CONFIGURO EL PIN P0.26, PARA EL ADC
+	PINSEL_CFG_T pinCfg2p;
+	pinCfg2p.port = PORT_0;
+	pinCfg2p.pin = PIN_26;
+	pinCfg2p.func = PINSEL_FUNC_01;
+	pinCfg2p.mode = PINSEL_TRISTATE;
+	pinCfg2p.openDrain = DISABLE;
+	PINSEL_ConfigPin(&pinCfg2p);
 
-            partes = line[1:].split(",")
+	//CONFIGURO EL PIN P0.0, PARA LA SEÑAL PWM, SERVO 1
+	PINSEL_CFG_T pinCfg1; //SEÑAL PWM
+	pinCfg1.port = PORT_0;
+	pinCfg1.pin = PIN_0;
+	pinCfg1.func = PINSEL_FUNC_00;
+	pinCfg1.mode = PINSEL_TRISTATE;
+	pinCfg1.openDrain = DISABLE;
+	PINSEL_ConfigPin(&pinCfg1);
+	GPIO_SetDir(PORT_0, (1 << 0), GPIO_OUTPUT);
 
-            for parte in partes:
+	//CONFIGURO EL PIN P0.1, PARA LA SEÑAL PWM, SERVO 2
+	PINSEL_CFG_T pinCfg1p; //SEÑAL PWM
+	pinCfg1p.port = PORT_0;
+	pinCfg1p.pin = PIN_1;
+	pinCfg1p.func = PINSEL_FUNC_00;
+	pinCfg1p.mode = PINSEL_TRISTATE;
+	pinCfg1p.openDrain = DISABLE;
+	PINSEL_ConfigPin(&pinCfg1p);
+	GPIO_SetDir(PORT_0, (1 << 1), GPIO_OUTPUT);
 
-                if ":" not in parte:
-                    continue
+	//CONFIGURACION DEL PIN P0.4, CONFIGURACION DEL PIN DE SALIDA DEL ELECTROIMAN
+	PINSEL_CFG_T pinCfg2;
+	pinCfg2.port = PORT_0;
+	pinCfg2.pin = PIN_4;
+	pinCfg2.func = PINSEL_FUNC_00;
+	pinCfg2.mode = PINSEL_TRISTATE;
+	pinCfg2.openDrain = DISABLE;
+	PINSEL_ConfigPin(&pinCfg2);
+	GPIO_SetDir(PORT_0, (1 << 4), GPIO_OUTPUT);
+	GPIO_ClearPins(PORT_0, 1 << 4);
 
-                k, v = parte.split(":", 1)
+	//CONFIGURAR INTERRUPCION EXTERNA EINT1
+	PINSEL_CFG_T pinEINT2;
+	pinEINT2.port = PORT_2;
+	pinEINT2.pin = PIN_10;
+	pinEINT2.func = PINSEL_FUNC_01;
+	pinEINT2.mode = PINSEL_PULLDOWN;
+	pinEINT2.openDrain = DISABLE;
+	PINSEL_ConfigPin(&pinEINT2);
 
-                data[k.strip()] = v.strip()
+	//CONFIGURAR INTERRUPCION EXTERNA EINT1
+	PINSEL_CFG_T pinEINT0;
+	pinEINT0.port = PORT_2;
+	pinEINT0.pin = PIN_11;
+	pinEINT0.func = PINSEL_FUNC_01;
+	pinEINT0.mode = PINSEL_PULLDOWN;
+	pinEINT0.openDrain = DISABLE;
+	PINSEL_ConfigPin(&pinEINT0);
 
-            print("DATA:", data)
+	//CONFIGURAR INTERRUPCION EXTERNA EINT2
+	PINSEL_CFG_T pinEINT1;
+	pinEINT1.port = PORT_2;
+	pinEINT1.pin = PIN_12;
+	pinEINT1.func = PINSEL_FUNC_01;
+	pinEINT1.mode = PINSEL_PULLDOWN;
+	pinEINT1.openDrain = DISABLE;
+	PINSEL_ConfigPin(&pinEINT1);
 
-            if "S1" in data:
-                ang1 = float(data["S1"])
-                self.gauge1.set_angle(ang1)
+	//CONFIGURACION DE PIN UART, EL TX
+    /*PINSEL_CFG_T uartCfg;
+	uartCfg.port = PORT_0;
+	uartCfg.pin = PIN_2;
+	uartCfg.func = PINSEL_FUNC_01;
+	uartCfg.mode = PINSEL_TRISTATE;
+	uartCfg.openDrain = DISABLE;
+	PINSEL_ConfigPin(&uartCfg);
+	GPIO_SetDir(PORT_0, (1 << 2), GPIO_OUTPUT);
+	//GPIO_ClearPins(PORT_0, 1 << 2);
+	//CONFIGURACION DE PIN UART, EL RX
+	PINSEL_CFG_T uartCfg1;
+	uartCfg1.port = PORT_0;
+	uartCfg1.pin = PIN_3;
+	uartCfg1.func = PINSEL_FUNC_01;
+	uartCfg1.mode = PINSEL_TRISTATE;
+	uartCfg1.openDrain = DISABLE;
+	PINSEL_ConfigPin(&uartCfg1);
+	GPIO_SetDir(PORT_0, (1 << 3), GPIO_INPUT);
+	//GPIO_ClearPins(PORT_0, 1 << 3);*/
+}
 
-            if "S2" in data:
-                ang2 = float(data["S2"])
-                self.gauge2.set_angle(ang2)
+void configTimer(){
+	//CONFIGURAR EL TIMER0
+	TIM_TIMERCFG_T timerCfg;
+	timerCfg.prescaleOpt = TIM_US;
+	timerCfg.prescaleValue = 1;
+	TIM_InitTimer(LPC_TIM0, &timerCfg);
 
-            if "M" in data:
-                self._update_mode_display(data["M"])
+	//CONFIGURAR EL TIMER1
+	TIM_TIMERCFG_T timerUART;
+	timerUART.prescaleOpt = TIM_US;
+	timerUART.prescaleValue = 100;
+	TIM_InitTimer(LPC_TIM1, &timerUART);
 
-        except Exception as e:
-            print("PARSE ERROR:", e)
-            self._log(f"Parse error: {e}")
-        
-        
-    """def _parse_line(self, line):
-        
-        #Parsea: $S1:90,S2:45,M:MANUAL
-        
-        try:
-            self._log(line)
-            parts = line[1:].split(",")
-            data = {}
-            for p in parts:
-                k, v = p.split(":")
-                data[k.strip()] = v.strip()
- 
-            if "S1" in data:
-                self.gauge1.set_angle(float(data["S1"]))
-            if "S2" in data:
-                self.gauge2.set_angle(float(data["S2"]))
-            if "M" in data:
-                self._update_mode_display(data["M"])
-        except Exception as e:
-            self._log(f"Parse error: {e}")
-    """
-    # ── Comandos ─────────────────────────────────────────────────────────────
-    def _set_auto(self):
-        self._send_command("0")
-        self._update_mode_display("AUTO")
- 
-    def _set_manual(self):
-        self._send_command("1")
-        self._update_mode_display("MANUAL")
- 
-    def _send_command(self, cmd):
-        if self.serial_port and self.serial_port.is_open:
-            self.serial_port.write(f"{cmd}\n".encode())
-            self._log(f"→ Enviado: {cmd}")
-        elif DEMO_MODE:
-            self._log(f"→ [DEMO] Comando: {cmd}")
- 
-    def _update_mode_display(self, mode):
-        self.mode.set(mode)
-        if mode == "AUTO":
-            self.mode_badge.config(bg=GREEN)
-        else:
-            self.mode_badge.config(bg=ACCENT)
- 
-    # ── Log ──────────────────────────────────────────────────────────────────
-    def _log(self, msg):
-        ts = time.strftime("%H:%M:%S")
-        line = f"[{ts}] {msg}\n"
-        self.log_text.config(state="normal")
-        self.log_text.insert("end", line)
-        self.log_text.see("end")
-        self.log_text.config(state="disabled")
- 
-    # ── Demo ─────────────────────────────────────────────────────────────────
-    def _start_demo(self):
-        self.status_msg.set("Modo demo (sin hardware)")
-        self._log("Modo DEMO activo — conectá el LPC1769 y cambiá DEMO_MODE=False")
-        self._demo_tick()
- 
-    def _demo_tick(self):
-        self._demo_t += 0.05
-        a1 = (math.sin(self._demo_t) * 0.5 + 0.5) * 360
-        a2 = (math.cos(self._demo_t * 0.7) * 0.5 + 0.5) * 360
-        self.gauge1.set_angle(a1)
-        self.gauge2.set_angle(a2)
-        self.root.after(50, self._demo_tick)
- 
- 
-if __name__ == "__main__":
-    root = tk.Tk()
-    app  = RobotControlApp(root)
-    root.mainloop()
+	//CONFIGURAR EL TIMER2
+	TIM_TIMERCFG_T timerCfg1p;
+	timerCfg1p.prescaleOpt = TIM_US;
+	timerCfg1p.prescaleValue = 1;
+	TIM_InitTimer(LPC_TIM2, &timerCfg1p);
+
+	//CONFIGURAR EL TIMER3
+	TIM_TIMERCFG_T timerPOS;
+	timerPOS.prescaleOpt = TIM_US;
+	timerPOS.prescaleValue = 100;
+	TIM_InitTimer(LPC_TIM3, &timerPOS);
+
+	//CONFIGURAR EL MATCH0 DEL TIMER0
+	TIM_MATCHCFG_T matchCfg;
+	matchCfg.channel = TIM_MATCH_0;
+	matchCfg.intEn = ENABLE;
+	matchCfg.stopEn = DISABLE;
+	matchCfg.resetEn = DISABLE;
+	matchCfg.extOpt = TIM_NOTHING;
+	matchCfg.matchValue = CONTROL;
+	TIM_ConfigMatch(LPC_TIM0, &matchCfg);
+
+	//CONFIGURAR EL MATCH1 DEL TIMER0
+	TIM_MATCHCFG_T matchCfg1;
+	matchCfg1.channel = TIM_MATCH_1;
+	matchCfg1.intEn = ENABLE;
+	matchCfg1.stopEn = DISABLE;
+	matchCfg1.resetEn = ENABLE;
+	matchCfg1.extOpt = TIM_NOTHING;
+	matchCfg1.matchValue = 20000;
+	TIM_ConfigMatch(LPC_TIM0, &matchCfg1);
+
+	//CONFIGURAR EL MATCH0 DEL TIMER2
+	TIM_MATCHCFG_T matchCfg1p;
+	matchCfg1p.channel = TIM_MATCH_0;
+	matchCfg1p.intEn = ENABLE;
+	matchCfg1p.stopEn = DISABLE;
+	matchCfg1p.resetEn = DISABLE;
+	matchCfg1p.extOpt = TIM_NOTHING;
+	matchCfg1p.matchValue = CONTROL1;
+	TIM_ConfigMatch(LPC_TIM2, &matchCfg1p);
+
+	//CONFIGURAR EL MATCH1 DEL TIMER2
+	TIM_MATCHCFG_T matchCfg1s;
+	matchCfg1s.channel = TIM_MATCH_1;
+	matchCfg1s.intEn = ENABLE;
+	matchCfg1s.stopEn = DISABLE;
+	matchCfg1s.resetEn = ENABLE;
+	matchCfg1s.extOpt = TIM_NOTHING;
+	matchCfg1s.matchValue = 20000;
+	TIM_ConfigMatch(LPC_TIM2, &matchCfg1s);
+
+	GPIO_SetPins(PORT_0,(1<<0));
+	GPIO_SetPins(PORT_0,(1<<1));
+
+	//CONFIGURAR EL MATCH0 DEL TIMER1
+	TIM_MATCHCFG_T matchUART;
+	matchUART.channel = TIM_MATCH_0;
+	matchUART.intEn = ENABLE;
+	matchUART.stopEn = DISABLE;
+	matchUART.resetEn = ENABLE;
+	matchUART.extOpt = TIM_NOTHING;
+	matchUART.matchValue = 10000;
+	TIM_ConfigMatch(LPC_TIM1, &matchUART);
+
+	//CONFIGURAR EL MATCH0 DEL TIMER3
+	TIM_MATCHCFG_T matchUART1;
+	matchUART1.channel = TIM_MATCH_0;
+	matchUART1.intEn = ENABLE;
+	matchUART1.stopEn = DISABLE;
+	matchUART1.resetEn = ENABLE;
+	matchUART1.extOpt = TIM_NOTHING;
+	matchUART1.matchValue = 20000;
+	TIM_ConfigMatch(LPC_TIM3, &matchUART1);
+
+	//INTERRUPCIONES
+	NVIC_EnableIRQ(TIMER0_IRQn);
+	NVIC_EnableIRQ(TIMER1_IRQn);
+    NVIC_EnableIRQ(TIMER2_IRQn);
+    NVIC_EnableIRQ(TIMER3_IRQn);
+    TIM_Enable(LPC_TIM0);
+    TIM_Enable(LPC_TIM1);
+    TIM_Enable(LPC_TIM2);
+    TIM_Enable(LPC_TIM3);
+}
+
+
+void configADC(){
+    ADC_Init(100000);
+
+    ADC_PinConfig(ADC_CHANNEL_0);
+    ADC_PinConfig(ADC_CHANNEL_3);
+
+    ADC_ChannelEnable(ADC_CHANNEL_0);
+    ADC_ChannelEnable(ADC_CHANNEL_3);
+
+    ADC_PowerUp();
+
+    ADC_BurstEnable();
+}
+
+void confiEINT(){
+	EXTI_Init();
+
+	EXTI_CFG_T exti0;
+	exti0.line = EXTI_EINT0;
+	exti0.mode = EXTI_EDGE_SENSITIVE;
+	exti0.polarity = EXTI_RISING_EDGE;
+
+	EXTI_ConfigEnable(&exti0);
+
+	EXTI_CFG_T exti1;
+	exti1.line = EXTI_EINT1;
+	exti1.mode = EXTI_EDGE_SENSITIVE;
+	exti1.polarity = EXTI_RISING_EDGE;
+
+	EXTI_ConfigEnable(&exti1);
+
+	EXTI_CFG_T exti2;
+	exti2.line = EXTI_EINT2;
+	exti2.mode = EXTI_EDGE_SENSITIVE;
+	exti2.polarity = EXTI_RISING_EDGE;
+
+	EXTI_Config(&exti2);
+	EXTI_ConfigEnable(&exti2);
+
+	NVIC_EnableIRQ(EINT0_IRQn);
+	NVIC_EnableIRQ(EINT1_IRQn);
+	NVIC_EnableIRQ(EINT2_IRQn);
+}
+
+
+
+void configUART(void) {
+
+    // configurar P0.2 (TXD0) y P0.3 (RXD0)
+    PINSEL_CFG_T pinCfg;
+
+    pinCfg.port   = PORT_0;
+    pinCfg.pin    = PIN_2;
+    pinCfg.func   = PINSEL_FUNC_01;   // funcion UART0 TXD
+    pinCfg.mode   = PINSEL_TRISTATE;
+    pinCfg.openDrain = DISABLE;
+    PINSEL_ConfigPin(&pinCfg);
+
+    pinCfg.pin    = PIN_3;
+    pinCfg.func   = PINSEL_FUNC_01;   // funcion UART0 RXD
+    pinCfg.mode      = PINSEL_PULLUP;
+    PINSEL_ConfigPin(&pinCfg);
+
+    UART_CFG_T uartCfg;
+    uartCfg.baudRate =  9600;
+    uartCfg.parity   = UART_PARITY_NONE;
+    uartCfg.dataBits  = UART_DBITS_8;
+    uartCfg.stopBits  = UART_STOPBIT_1;
+    UART_Init(UART0, &uartCfg);
+
+    UART_FIFO_CFG_T fifoCfg;
+    fifoCfg.resetRxBuf = ENABLE;
+    fifoCfg.resetTxBuf = ENABLE;
+    fifoCfg.dmaMode    = DISABLE;
+    fifoCfg.level      = UART_FIFO_TRGLEV0;
+    UART_FIFOConfig(UART0, &fifoCfg);
+
+    UART_IntConfig(UART0, UART_INT_RBR, ENABLE);
+    NVIC_EnableIRQ(UART0_IRQn);
+
+    UART_TxEnable(UART0);
+}
+
+void enviarUART(void){
+
+    char msg[40];
+     int i = 0;
+     const char* sufijo = ",M:MANUAL\r\n";
+
+     msg[i++] = '$';
+     msg[i++] = 'S'; msg[i++] = '1'; msg[i++] = ':';
+     i += itoa_simple(angulo1, msg + i);
+     msg[i++] = ',';
+     msg[i++] = 'S'; msg[i++] = '2'; msg[i++] = ':';
+     i += itoa_simple(angulo2, msg + i);
+
+     if(Estado == 1){
+    	 sufijo = ",M:MANUAL\r\n";
+     }else{
+    	 sufijo = ",M:AUTO\r\n";
+     }
+     const char* p = sufijo;
+     while (*p) msg[i++] = *p++;
+     msg[i] = '\0';
+
+     UART_Send(UART0, (uint8_t*)msg, i, BLOCKING);
+}
+
+
+
+void configDMA(void){
+	GPDMA_Init();
+	GPDMA_Channel_CFG_T dmaCfg;
+	dmaCfg.channelNum=0;
+	dmaCfg.transferSize=1024;
+	dmaCfg.type=GPDMA_P2M;
+	dmaCfg.srcMemAddr=(uint32_t)&LPC_ADC->ADGDR;
+	dmaCfg.dstMemAddr=(uint32_t)BufferDMA;
+	dmaCfg.srcConn=GPDMA_ADC;
+	dmaCfg.dstConn=0;
+	dmaCfg.src.burst=GPDMA_BSIZE_1;
+	dmaCfg.src.width=GPDMA_WORD;
+	dmaCfg.src.increment=0;
+	dmaCfg.dst.burst=GPDMA_BSIZE_1;
+	dmaCfg.dst.width=GPDMA_WORD;
+	dmaCfg.dst.increment=ENABLE;
+	dmaCfg.intTC=DISABLE;
+	dmaCfg.intErr=DISABLE;
+	dmaCfg.linkedList=(uint32_t)&lli;
+	GPDMA_SetupChannel(&dmaCfg);
+	GPDMA_ChannelStart(GPDMA_CH_0);
+}
+
+
+
+void actualizarADC(void)
+{
+    for(int i = 0; i < 1024; i++)
+    {
+        uint32_t dato = BufferDMA[i];
+
+        if(dato & (1UL << 31))
+        {
+            uint16_t adc = (dato >> 4) & 0xFFF;
+            uint8_t canal = (dato >> 24) & 0x07;
+
+            if(canal == 0)
+            {
+            	convertido1 = adc;
+            }
+            else if(canal == 3)
+            {
+            	convertido2 = adc;
+            }
+        }
+    }
+
+}
+
+
+
+/*void actualizarADC(void){
+    for (int i = 0; i < 1024; i++){
+        uint32_t dato = BufferDMA[i];
+
+        if (dato & (1UL << 31))        {
+            uint16_t adc   = (dato >> 4) & 0xFFF;
+            uint8_t  canal = (dato >> 24) & 0x07;
+
+            if (canal == 0){
+                convertido1 += adc;
+                i1++;
+        	}
+            else if (canal == 3){
+                convertido2 += adc;
+                i2++;
+            }
+        }
+    }
+
+    convertido1 = convertido1/i1;
+    convertido2 = convertido2/i2;
+    i1 = 0;
+    i2 = 0;
+    convertido1 = ;
+    convertido2 = convertido2/i2;
+}*/
+
+
+
+
+void actualizarServo1(void){
+    PWM1 = 500 + ((uint32_t)convertido1 * 2000) / 4095;
+
+    TIM_UpdateMatchValue(LPC_TIM0, TIM_MATCH_0, PWM1);
+}
+
+void actualizarServo2(void){
+    PWM2 = 500 + ((uint32_t)convertido2 * 2000) / 4095;
+
+    TIM_UpdateMatchValue(LPC_TIM2, TIM_MATCH_0, PWM2);
+}
+
+
+int main(void){
+	BufferServo1[0] = 1000;
+	BufferServo2[0] = 1000;
+
+	lli.srcAddr = (uint32_t)&LPC_ADC->ADGDR;
+	lli.dstAddr = (uint32_t)BufferDMA;
+	lli.nextLLI = (uint32_t)&lli;
+	lli.control = 1024 | (2 << 18) | (2 << 21) | (1 << 27);
+	configPIN();
+	confiEINT();
+	configADC();
+	configDMA();
+	configUART();
+	configTimer();
+	while(1){
+			if(Estado == 1){
+					actualizarADC();
+					actualizarServo1();
+					actualizarServo2();
+					if(tick==1){
+						tick = 0;
+						angulo1 = ((uint32_t)(PWM1 - 500) * 180) / 2000;
+						angulo2 = ((uint32_t)(PWM2 - 500) * 180) / 2000;
+						enviarUART();
+					}
+
+				} else {
+					while(!Estado){
+					if(tickAUTO==1){
+						tickAUTO = 0;
+						TIM_UpdateMatchValue(LPC_TIM0, TIM_MATCH_0, BufferServo1[contador]);
+						TIM_UpdateMatchValue(LPC_TIM2, TIM_MATCH_0, BufferServo2[contador]);
+						contador++;
+						if(contador >= index){
+							contador = 0;
+						}
+
+					}
+				}
+				}
+
+	}
+}
+
+
+void TIMER0_IRQHandler(void){
+	    if(TIM_GetIntStatus(LPC_TIM0, TIM_MR0_INT)){
+	        TIM_ClearIntPending(LPC_TIM0, TIM_MR0_INT);
+	        GPIO_ClearPins(PORT_0, (1 << 0));  // fin del pulso → LOW
+	    }
+	    if(TIM_GetIntStatus(LPC_TIM0, TIM_MR1_INT)){
+	        TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
+	        GPIO_SetPins(PORT_0, (1 << 0));    // inicio nuevo pulso → HIGH
+	    }
+}
+
+void TIMER1_IRQHandler(void){
+    if(TIM_GetIntStatus(LPC_TIM1, TIM_MR0_INT)){
+        TIM_ClearIntPending(LPC_TIM1, TIM_MR0_INT);
+        tick = 1;          // solo levantamos la bandera, nada más
+	}
+
+	/*TIM_ClearIntPending(LPC_TIM1, TIM_MR0_INT);
+	if(Estado == 1){
+	        // MODO MANUAL
+	        actualizarADC();
+	        actualizarServo1();
+	        actualizarServo2();
+	        angulo1 = ((uint32_t)(PWM1 - 500) * 180) / 2000;
+	        angulo2 = ((uint32_t)(PWM2 - 500) * 180) / 2000;
+	        enviarUART();
+
+	    } else {
+	        TIM_UpdateMatchValue(LPC_TIM0, TIM_MATCH_0, BufferServo1[contador]);
+	        TIM_UpdateMatchValue(LPC_TIM2, TIM_MATCH_0, BufferServo2[contador]);
+	        contador++;
+			if(contador >= index){
+				contador = 0;
+		}
+	}*/
+}
+
+
+void TIMER2_IRQHandler(void){
+	    if(TIM_GetIntStatus(LPC_TIM2, TIM_MR0_INT)){
+	        TIM_ClearIntPending(LPC_TIM2, TIM_MR0_INT);
+	        GPIO_ClearPins(PORT_0, (1 << 1));  // fin del pulso → LOW
+	    }
+	    if(TIM_GetIntStatus(LPC_TIM2, TIM_MR1_INT)){
+	        TIM_ClearIntPending(LPC_TIM2, TIM_MR1_INT);
+	        GPIO_SetPins(PORT_0, (1 << 1));    // inicio nuevo pulso → HIGH
+	    }
+}
+
+void TIMER3_IRQHandler(void)
+{
+    if(TIM_GetIntStatus(LPC_TIM3, TIM_MR0_INT))
+    {
+        TIM_ClearIntPending(LPC_TIM3, TIM_MR0_INT);
+        tickAUTO = 1;
+    }
+}
+
+void EINT0_IRQHandler(void){
+	EXTI_ClearFlag(EXTI_EINT0);
+
+	for(int i = 0; i < 512; i++) {
+	    BufferServo1[i] = 0;
+	    BufferServo2[i] = 0;
+	}
+}
+
+
+void EINT1_IRQHandler(void){
+	EXTI_ClearFlag(EXTI_EINT1);
+	GPIO_TogglePins(PORT_0, 1 << 4);
+	//enviarUART();
+	//GPIO_TogglePins(PORT_0, 1 << 2);
+}
+
+void EINT2_IRQHandler(void){
+
+	EXTI_ClearFlag(EXTI_EINT2);
+
+	actualizarADC();
+	actualizarServo1();
+	actualizarServo2();
+
+	if(index < 512){
+	    BufferServo1[index] = PWM1;
+	    BufferServo2[index] = PWM2;
+	    index++;
+	}
+}
+
+
+void UART0_IRQHandler(void)
+{
+    while(LPC_UART0->LSR & (1 << 0))
+    {
+        uint8_t byte = UART_ReceiveByte(UART0);
+
+        if(byte == '1')
+        {
+            Estado = 1;
+        }
+        else if(byte == '0')
+        {
+            Estado = 0;
+            contador = 0;
+        }
+    }
+}
