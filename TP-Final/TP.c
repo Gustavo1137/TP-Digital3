@@ -16,39 +16,45 @@
 
 #define CONTROL 1000
 #define CONTROL1 1000
-#define MODO_MANUAL 0
-#define MODO_AUTO   1
+//#define MODO_MANUAL 0
+//#define MODO_AUTO   1
 
 volatile int valor = 0;
 volatile int PWM1 = 0;
 volatile int PWM2 = 0;
 volatile uint16_t convertido1 = 0;
 volatile uint16_t convertido2 = 0;
-uint32_t BufferDMA[1024];
+volatile uint32_t BufferDMA[1024];
 uint16_t BufferServo1[512];
 uint16_t BufferServo2[512];
 //uint32_t* PosicionesGuar1 = (uint32_t*) 0x20080000;//primera mitad del banco 1
 //uint32_t* PosicionesGuar2 = (uint32_t*) 0x20082000;//segunda mitad del banco
 volatile uint16_t totalPosiciones = 0;  // cuántas se guardaron
-volatile uint16_t idxAuto = 0;          // cuál se reproduce ahora
-volatile char rx_buf[16];
-volatile uint8_t rx_idx = 0;
-volatile uint8_t cmd_ready = 0;
-volatile uint8_t modo = MODO_MANUAL;
-volatile int angulo = 0;
+//volatile uint16_t idxAuto = 0;          // cuál se reproduce ahora
+//volatile char rx_buf[16];
+//volatile uint8_t rx_idx = 0;
+//volatile uint8_t cmd_ready = 0;
+//volatile uint8_t modo = MODO_MANUAL;
+//volatile int angulo = 0;
 volatile uint16_t angulo1 = 0;
 volatile uint16_t angulo2 = 0;
 volatile uint16_t i1 = 0;
 volatile uint16_t i2 = 0;
-volatile uint16_t t1 = 0;
-volatile uint16_t t2 = 0;
-volatile int index=0;
+//volatile uint16_t t1 = 0;
+//volatile uint16_t t2 = 0;
+volatile int index = 0;
 uint16_t adc=0;
 uint8_t canal=0;
 volatile uint32_t dato = 0;
 volatile uint32_t valorUART = 0;
 volatile uint32_t Estado = 1;
 volatile uint32_t contador = 0;
+volatile uint32_t tick  = 0;
+volatile uint32_t tickAUTO  = 0;
+
+
+static uint32_t filtro1 = 0;
+static uint32_t filtro2 = 0;
 
 
 GPDMA_LLI_T lli;
@@ -71,7 +77,7 @@ void configPIN(){
 	pinCfg.port = PORT_0;
 	pinCfg.pin = PIN_23;
 	pinCfg.func = PINSEL_FUNC_01;
-	pinCfg.mode = PINSEL_PULLDOWN;
+	pinCfg.mode = PINSEL_TRISTATE;
 	pinCfg.openDrain = DISABLE;
 	PINSEL_ConfigPin(&pinCfg);
 
@@ -80,7 +86,7 @@ void configPIN(){
 	pinCfg2p.port = PORT_0;
 	pinCfg2p.pin = PIN_26;
 	pinCfg2p.func = PINSEL_FUNC_01;
-	pinCfg2p.mode = PINSEL_PULLDOWN;
+	pinCfg2p.mode = PINSEL_TRISTATE;
 	pinCfg2p.openDrain = DISABLE;
 	PINSEL_ConfigPin(&pinCfg2p);
 
@@ -163,16 +169,22 @@ void configTimer(){
 	TIM_InitTimer(LPC_TIM0, &timerCfg);
 
 	//CONFIGURAR EL TIMER1
-	/*TIM_TIMERCFG_T timerCfg1;
-	timerCfg1.prescaleOpt = TIM_US;
-	timerCfg1.prescaleValue = 1;
-	TIM_InitTimer(LPC_TIM1, &timerCfg1);*/
+	TIM_TIMERCFG_T timerUART;
+	timerUART.prescaleOpt = TIM_US;
+	timerUART.prescaleValue = 100;
+	TIM_InitTimer(LPC_TIM1, &timerUART);
 
 	//CONFIGURAR EL TIMER2
 	TIM_TIMERCFG_T timerCfg1p;
 	timerCfg1p.prescaleOpt = TIM_US;
 	timerCfg1p.prescaleValue = 1;
 	TIM_InitTimer(LPC_TIM2, &timerCfg1p);
+
+	//CONFIGURAR EL TIMER3
+	TIM_TIMERCFG_T timerPOS;
+	timerPOS.prescaleOpt = TIM_US;
+	timerPOS.prescaleValue = 100;
+	TIM_InitTimer(LPC_TIM3, &timerPOS);
 
 	//CONFIGURAR EL MATCH0 DEL TIMER0
 	TIM_MATCHCFG_T matchCfg;
@@ -217,11 +229,35 @@ void configTimer(){
 	GPIO_SetPins(PORT_0,(1<<0));
 	GPIO_SetPins(PORT_0,(1<<1));
 
+	//CONFIGURAR EL MATCH0 DEL TIMER1
+	TIM_MATCHCFG_T matchUART;
+	matchUART.channel = TIM_MATCH_0;
+	matchUART.intEn = ENABLE;
+	matchUART.stopEn = DISABLE;
+	matchUART.resetEn = ENABLE;
+	matchUART.extOpt = TIM_NOTHING;
+	matchUART.matchValue = 10000;
+	TIM_ConfigMatch(LPC_TIM1, &matchUART);
+
+	//CONFIGURAR EL MATCH1 DEL TIMER1
+	TIM_MATCHCFG_T matchUART1;
+	matchUART1.channel = TIM_MATCH_0;
+	matchUART1.intEn = ENABLE;
+	matchUART1.stopEn = DISABLE;
+	matchUART1.resetEn = ENABLE;
+	matchUART1.extOpt = TIM_NOTHING;
+	matchUART1.matchValue = 20000;
+	TIM_ConfigMatch(LPC_TIM3, &matchUART1);
+
 	//INTERRUPCIONES
 	NVIC_EnableIRQ(TIMER0_IRQn);
+	NVIC_EnableIRQ(TIMER1_IRQn);
     NVIC_EnableIRQ(TIMER2_IRQn);
+    NVIC_EnableIRQ(TIMER3_IRQn);
     TIM_Enable(LPC_TIM0);
+    TIM_Enable(LPC_TIM1);
     TIM_Enable(LPC_TIM2);
+    TIM_Enable(LPC_TIM3);
 }
 
 
@@ -281,7 +317,7 @@ void configUART(void) {
     PINSEL_ConfigPin(&pinCfg);
 
     UART_CFG_T uartCfg;
-    uartCfg.baudRate = 9600;
+    uartCfg.baudRate =  9600;
     uartCfg.parity   = UART_PARITY_NONE;
     uartCfg.dataBits  = UART_DBITS_8;
     uartCfg.stopBits  = UART_STOPBIT_1;
@@ -352,7 +388,34 @@ void configDMA(void){
 }
 
 
-void actualizarADC(void){
+
+void actualizarADC(void)
+{
+    for(int i = 0; i < 1024; i++)
+    {
+        uint32_t dato = BufferDMA[i];
+
+        if(dato & (1UL << 31))
+        {
+            uint16_t adc = (dato >> 4) & 0xFFF;
+            uint8_t canal = (dato >> 24) & 0x07;
+
+            if(canal == 0)
+            {
+            	convertido1 = adc;
+            }
+            else if(canal == 3)
+            {
+            	convertido1 = adc;
+            }
+        }
+    }
+
+}
+
+
+
+/*void actualizarADC(void){
     for (int i = 0; i < 1024; i++){
         uint32_t dato = BufferDMA[i];
 
@@ -360,13 +423,24 @@ void actualizarADC(void){
             uint16_t adc   = (dato >> 4) & 0xFFF;
             uint8_t  canal = (dato >> 24) & 0x07;
 
-            if (canal == 0)
-                convertido1 = adc;
-            else if (canal == 3)
-                convertido2 = adc;
+            if (canal == 0){
+                convertido1 += adc;
+                i1++;
+        	}
+            else if (canal == 3){
+                convertido2 += adc;
+                i2++;
+            }
         }
     }
-}
+
+    convertido1 = convertido1/i1;
+    convertido2 = convertido2/i2;
+    i1 = 0;
+    i2 = 0;
+    convertido1 = ;
+    convertido2 = convertido2/i2;
+}*/
 
 
 
@@ -386,9 +460,7 @@ void actualizarServo2(void){
 
 int main(void){
 	BufferServo1[0] = 1000;
-
 	BufferServo2[0] = 1000;
-
 
 	lli.srcAddr = (uint32_t)&LPC_ADC->ADGDR;
 	lli.dstAddr = (uint32_t)BufferDMA;
@@ -401,29 +473,29 @@ int main(void){
 	configUART();
 	configTimer();
 	while(1){
-		if(Estado == 1){
-		        // MODO MANUAL
-		        actualizarADC();
-		        actualizarServo1();
-		        actualizarServo2();
-		        angulo1 = ((uint32_t)(PWM1 - 500) * 180) / 2000;
-		        angulo2 = ((uint32_t)(PWM2 - 500) * 180) / 2000;
-		        enviarUART();
+			if(Estado == 1){
+					actualizarADC();
+					actualizarServo1();
+					actualizarServo2();
+					if(tick==1){
+						tick = 0;
+						angulo1 = ((uint32_t)(PWM1 - 500) * 180) / 2000;
+						angulo2 = ((uint32_t)(PWM2 - 500) * 180) / 2000;
+						enviarUART();
+					}
 
-		    } else {
-		        TIM_UpdateMatchValue(LPC_TIM0, TIM_MATCH_0, BufferServo1[contador]);
-		        TIM_UpdateMatchValue(LPC_TIM2, TIM_MATCH_0, BufferServo2[contador]);
-		        //angulo1 = 90;
-		        //angulo2 = 90;
-		        contador++;
-				if(contador >= index){
-					contador = 0;
+				} else {
+					if(tickAUTO==1){
+						tickAUTO = 0;
+						TIM_UpdateMatchValue(LPC_TIM0, TIM_MATCH_0, BufferServo1[contador]);
+						TIM_UpdateMatchValue(LPC_TIM2, TIM_MATCH_0, BufferServo2[contador]);
+						contador++;
+						if(contador >= index){
+							contador = 0;
+						}
+					}
 				}
 
-				for(volatile int i = 0; i < 5000000; i++);
-		    }
-
-		    for(volatile int i = 0; i < 1000000; i++);
 	}
 }
 
@@ -439,6 +511,33 @@ void TIMER0_IRQHandler(void){
 	    }
 }
 
+void TIMER1_IRQHandler(void){
+    if(TIM_GetIntStatus(LPC_TIM1, TIM_MR0_INT)){
+        TIM_ClearIntPending(LPC_TIM1, TIM_MR0_INT);
+        tick = 1;          // solo levantamos la bandera, nada más
+	}
+
+	/*TIM_ClearIntPending(LPC_TIM1, TIM_MR0_INT);
+	if(Estado == 1){
+	        // MODO MANUAL
+	        actualizarADC();
+	        actualizarServo1();
+	        actualizarServo2();
+	        angulo1 = ((uint32_t)(PWM1 - 500) * 180) / 2000;
+	        angulo2 = ((uint32_t)(PWM2 - 500) * 180) / 2000;
+	        enviarUART();
+
+	    } else {
+	        TIM_UpdateMatchValue(LPC_TIM0, TIM_MATCH_0, BufferServo1[contador]);
+	        TIM_UpdateMatchValue(LPC_TIM2, TIM_MATCH_0, BufferServo2[contador]);
+	        contador++;
+			if(contador >= index){
+				contador = 0;
+		}
+	}*/
+}
+
+
 void TIMER2_IRQHandler(void){
 	    if(TIM_GetIntStatus(LPC_TIM2, TIM_MR0_INT)){
 	        TIM_ClearIntPending(LPC_TIM2, TIM_MR0_INT);
@@ -450,6 +549,24 @@ void TIMER2_IRQHandler(void){
 	    }
 }
 
+void TIMER3_IRQHandler(void)
+{
+    if(TIM_GetIntStatus(LPC_TIM3, TIM_MR0_INT))
+    {
+        TIM_ClearIntPending(LPC_TIM3, TIM_MR0_INT);
+        tickAUTO = 1;
+    }
+}
+
+void EINT0_IRQHandler(void){
+	EXTI_ClearFlag(EXTI_EINT0);
+
+	for(int i = 0; i < 512; i++) {
+	    BufferServo1[index] = 0;
+	    BufferServo2[index] = 0;
+	}
+}
+
 
 void EINT1_IRQHandler(void){
 	EXTI_ClearFlag(EXTI_EINT1);
@@ -459,71 +576,35 @@ void EINT1_IRQHandler(void){
 }
 
 void EINT2_IRQHandler(void){
+
 	EXTI_ClearFlag(EXTI_EINT2);
 
 	actualizarADC();
 	actualizarServo1();
 	actualizarServo2();
 
-	//BufferServo1[index] = PWM1;
-	//BufferServo2[index] = PWM2;
-
-	//index++;
-
 	if(index < 512){
 	    BufferServo1[index] = PWM1;
 	    BufferServo2[index] = PWM2;
 	    index++;
 	}
-
-	/*EXTI_ClearFlag(EXTI_EINT2);
-
-	GPIO_TogglePins(PORT_0, (1<<4));
-
-	BufferServo1[index] = PWM1;
-	BufferServo2[index] = PWM2;
-    index++;
-    if(index==512){
-    	index=0;
-    	//contador++;
-    }*/
 }
 
-void UART0_IRQHandler(void){
 
-    while(UART_CheckBusy(UART0) == RESET){
-
-        if(!(LPC_UART0->LSR & (1<<0)))
-            break;
-
+void UART0_IRQHandler(void)
+{
+    while(LPC_UART0->LSR & (1 << 0))
+    {
         uint8_t byte = UART_ReceiveByte(UART0);
 
         if(byte == '1')
+        {
             Estado = 1;
-
-        if(byte == '0')
+        }
+        else if(byte == '0')
+        {
             Estado = 0;
             contador = 0;
+        }
     }
-
-	/*GPIO_TogglePins(PORT_0, (1<<4));
-	uint8_t byte = UART_ReceiveByte(UART0);
-
-	    if(byte == '1'){
-	        Estado = 1;
-	    }
-	    else if(byte == '0'){
-	        Estado = 0;
-	    }*/
-    /*NVIC_ClearPendingIRQ(UART0_IRQn);
-
-	uint32_t valorUART = UART_ReceiveByte(UART0);
-
-    if (valorUART == '1') {
-    	Estado = 1;
-    } else if (valorUART == '0') {
-        Estado = 0;
-    }*/
 }
-
-
