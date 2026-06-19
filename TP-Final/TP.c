@@ -122,6 +122,15 @@ void configPIN(){
 	GPIO_ClearPins(PORT_0, 1 << 4);
 
 	//CONFIGURAR INTERRUPCION EXTERNA EINT1
+	PINSEL_CFG_T pinEINT2;
+	pinEINT2.port = PORT_2;
+	pinEINT2.pin = PIN_10;
+	pinEINT2.func = PINSEL_FUNC_01;
+	pinEINT2.mode = PINSEL_PULLDOWN;
+	pinEINT2.openDrain = DISABLE;
+	PINSEL_ConfigPin(&pinEINT2);
+
+	//CONFIGURAR INTERRUPCION EXTERNA EINT1
 	PINSEL_CFG_T pinEINT0;
 	pinEINT0.port = PORT_2;
 	pinEINT0.pin = PIN_11;
@@ -239,7 +248,7 @@ void configTimer(){
 	matchUART.matchValue = 10000;
 	TIM_ConfigMatch(LPC_TIM1, &matchUART);
 
-	//CONFIGURAR EL MATCH1 DEL TIMER1
+	//CONFIGURAR EL MATCH0 DEL TIMER3
 	TIM_MATCHCFG_T matchUART1;
 	matchUART1.channel = TIM_MATCH_0;
 	matchUART1.intEn = ENABLE;
@@ -278,6 +287,13 @@ void configADC(){
 void confiEINT(){
 	EXTI_Init();
 
+	EXTI_CFG_T exti0;
+	exti0.line = EXTI_EINT0;
+	exti0.mode = EXTI_EDGE_SENSITIVE;
+	exti0.polarity = EXTI_RISING_EDGE;
+
+	EXTI_ConfigEnable(&exti0);
+
 	EXTI_CFG_T exti1;
 	exti1.line = EXTI_EINT1;
 	exti1.mode = EXTI_EDGE_SENSITIVE;
@@ -293,6 +309,7 @@ void confiEINT(){
 	EXTI_Config(&exti2);
 	EXTI_ConfigEnable(&exti2);
 
+	NVIC_EnableIRQ(EINT0_IRQn);
 	NVIC_EnableIRQ(EINT1_IRQn);
 	NVIC_EnableIRQ(EINT2_IRQn);
 }
@@ -406,7 +423,7 @@ void actualizarADC(void)
             }
             else if(canal == 3)
             {
-            	convertido1 = adc;
+            	convertido2 = adc;
             }
         }
     }
@@ -485,6 +502,7 @@ int main(void){
 					}
 
 				} else {
+					while(!Estado){
 					if(tickAUTO==1){
 						tickAUTO = 0;
 						TIM_UpdateMatchValue(LPC_TIM0, TIM_MATCH_0, BufferServo1[contador]);
@@ -493,7 +511,9 @@ int main(void){
 						if(contador >= index){
 							contador = 0;
 						}
+
 					}
+				}
 				}
 
 	}
@@ -562,8 +582,8 @@ void EINT0_IRQHandler(void){
 	EXTI_ClearFlag(EXTI_EINT0);
 
 	for(int i = 0; i < 512; i++) {
-	    BufferServo1[index] = 0;
-	    BufferServo2[index] = 0;
+	    BufferServo1[i] = 0;
+	    BufferServo2[i] = 0;
 	}
 }
 
